@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: prism-postgres
+    environment:
+      POSTGRES_DB: prism
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - prism_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prism -d prism"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  prism-be:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prism-be
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/prism?schema=public
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  prism_db_data:

@@ -1,0 +1,223 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_VERIFICATION
+  DISAPPROVED
+}
+
+enum DomainStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum PrStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  REREVIEW
+  DEPLOYED
+}
+
+enum PrType {
+  FEATURE
+  ENHANCEMENT
+  BUG
+}
+
+enum ReleaseEnvironment {
+  STAGING
+  PRODUCTION
+  UAT
+}
+
+enum NotificationStatus {
+  SENT
+  FAILED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  firstName    String     @default("") @map("first_name") @db.VarChar(100)
+  lastName     String     @default("") @map("last_name") @db.VarChar(100)
+  email        String     @unique @db.VarChar(255)
+  githubUserId String     @default("") @map("github_user_id") @db.VarChar(255)
+  status       UserStatus @default(PENDING_VERIFICATION)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  createdRoles        Role[]            @relation("roles_created_by_user")
+  createdEmailDomains EmailDomain[]     @relation("email_domains_created_by_user")
+  ownedPrs            Pr[]              @relation("pr_owner")
+  reviewAssignedPrs   Pr[]              @relation("pr_reviewer")
+  createdReleases     Release[]         @relation("releases_created_by_user")
+  performedAuditLogs  AuditLog[]        @relation("audit_logs_performed_by_user")
+  receivedLogs        NotificationLog[] @relation("notification_logs_recipient")
+  userRoles           UserRole[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique @db.VarChar(100)
+  description String?  @db.Text
+  createdBy   String   @map("created_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  creator         User             @relation("roles_created_by_user", fields: [createdBy], references: [id], onDelete: Restrict)
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique @db.VarChar(120)
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId    String   @map("user_id") @db.Uuid
+  roleId    String   @map("role_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model EmailDomain {
+  id        String       @id @default(uuid()) @db.Uuid
+  domain    String       @unique @db.VarChar(255)
+  status    DomainStatus @default(ACTIVE)
+  createdBy String       @map("created_by") @db.Uuid
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  creator User @relation("email_domains_created_by_user", fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@map("email_domains")
+}
+
+model OtpToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @db.VarChar(255)
+  otp       String   @db.VarChar(16)
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email, otp, used])
+  @@index([email, createdAt])
+  @@map("otp_tokens")
+}
+
+model Pr {
+  id           String   @id @default(uuid()) @db.Uuid
+  ownerId      String   @map("owner_id") @db.Uuid
+  repo         String   @db.VarChar(255)
+  branch       String   @db.VarChar(255)
+  prLink       String   @map("pr_link") @db.Text
+  reviewerId   String?  @map("reviewer_id") @db.Uuid
+  status       PrStatus @default(SUBMITTED)
+  type         PrType
+  zohoLink     String?  @map("zoho_link") @db.Text
+  deployedFlag Boolean  @default(false) @map("deployed_flag")
+  comments     String   @default("") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  owner        User           @relation("pr_owner", fields: [ownerId], references: [id], onDelete: Restrict)
+  reviewer     User?          @relation("pr_reviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  releasePrMap ReleasePrMap[]
+
+  @@index([ownerId])
+  @@index([reviewerId])
+  @@index([status])
+  @@map("prs")
+}
+
+model Release {
+  id          String             @id @default(uuid()) @db.Uuid
+  environment ReleaseEnvironment
+  name        String             @db.VarChar(255)
+  releaseDate DateTime?          @map("release_date")
+  createdBy   String             @map("created_by") @db.Uuid
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  creator      User           @relation("releases_created_by_user", fields: [createdBy], references: [id], onDelete: Restrict)
+  releasePrMap ReleasePrMap[]
+
+  @@index([environment])
+  @@map("releases")
+}
+
+model ReleasePrMap {
+  releaseId String   @map("release_id") @db.Uuid
+  prId      String   @map("pr_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  release Release @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  pr      Pr      @relation(fields: [prId], references: [id], onDelete: Cascade)
+
+  @@id([releaseId, prId])
+  @@map("release_pr_map")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  entityType String   @map("entity_type") @db.VarChar(120)
+  entityId   String   @map("entity_id") @db.Uuid
+  action     String   @db.VarChar(120)
+  performedBy String  @map("performed_by") @db.Uuid
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  performer User @relation("audit_logs_performed_by_user", fields: [performedBy], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([performedBy])
+  @@map("audit_logs")
+}
+
+model NotificationLog {
+  id          String             @id @default(uuid()) @db.Uuid
+  eventType   String             @map("event_type") @db.VarChar(120)
+  recipientId String             @map("recipient_id") @db.Uuid
+  status      NotificationStatus
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  recipient User @relation("notification_logs_recipient", fields: [recipientId], references: [id], onDelete: Restrict)
+
+  @@index([recipientId])
+  @@map("notification_logs")
+}
