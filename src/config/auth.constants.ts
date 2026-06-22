@@ -20,4 +20,18 @@ export const SESSION_SCOPE = {
 
 export type SessionScope = (typeof SESSION_SCOPE)[keyof typeof SESSION_SCOPE];
 
+export const LOGOUT_SCOPE = {
+  CURRENT_SESSION: "CURRENT_SESSION",
+  ALL_SESSIONS: "ALL_SESSIONS"
+} as const;
+
+export type LogoutScope = (typeof LOGOUT_SCOPE)[keyof typeof LOGOUT_SCOPE];
+
+export const AUTH_SESSION_REVOKE_REASON = {
+  USER_LOGOUT_CURRENT: "USER_LOGOUT_CURRENT",
+  USER_LOGOUT_ALL: "USER_LOGOUT_ALL",
+  NEW_LOGIN_ROTATION: "NEW_LOGIN_ROTATION",
+  ADMIN_REVOKED: "ADMIN_REVOKED"
+} as const;
+
 export const SESSION_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;

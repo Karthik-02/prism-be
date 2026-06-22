@@ -1,12 +1,18 @@
 import { DomainStatus, UserStatus, type User } from "@prisma/client";
 
-import { AUTH_ERROR_MESSAGE, AUTH_RESPONSE_MESSAGE, SESSION_SCOPE, type SessionScope } from "../../config/auth.constants";
+import {
+  AUTH_ERROR_MESSAGE,
+  AUTH_RESPONSE_MESSAGE,
+  LOGOUT_SCOPE,
+  SESSION_SCOPE,
+  type LogoutScope,
+  type SessionScope
+} from "../../config/auth.constants";
 import { env } from "../../config/env";
 import { HTTP_STATUS } from "../../config/http.constants";
 import { LOG_CONTEXT } from "../../config/log.constants";
 import { AppError } from "../../lib/app-error";
 import { sendOtpEmail } from "../../lib/email";
-import { signAuthToken } from "../../lib/jwt";
 import { logger } from "../../lib/logger";
 import { maskEmail } from "../../lib/log.utils";
 import { generateNumericOtp } from "../../lib/otp";
@@ -14,7 +20,8 @@ import { prisma } from "../../lib/prisma";
 import { AUDIT_ACTION, AUDIT_ENTITY } from "../audit/audit.constants";
 import { createAuditLog } from "../audit/audit.service";
 import { resolveUserPermissionSet } from "../rbac/rbac.service";
-import type { RequestOtpInput, VerifyOtpInput } from "./auth.schema";
+import { issueAuthSession, revokeAuthSessions } from "./auth-session.service";
+import type { LogoutInput, RequestOtpInput, VerifyOtpInput } from "./auth.schema";
 
 const PROFILE_ONLY_STATUSES = new Set<UserStatus>([
   UserStatus.PENDING_VERIFICATION,
@@ -53,6 +60,11 @@ interface CreateOrLoadUserResult {
   wasCreated: boolean;
 }
 
+interface RoleSummary {
+  id: string;
+  name: string;
+}
+
 const createOrLoadUser = async (input: VerifyOtpInput): Promise<CreateOrLoadUserResult> => {
   const email = normalizeEmail(input.email);
   const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -82,6 +94,29 @@ const createOrLoadUser = async (input: VerifyOtpInput): Promise<CreateOrLoadUser
 
 const sessionScopeForStatus = (status: UserStatus): SessionScope =>
   PROFILE_ONLY_STATUSES.has(status) ? SESSION_SCOPE.PROFILE_ONLY : SESSION_SCOPE.FULL_ACCESS;
+
+const listUserRoles = async (userId: string): Promise<RoleSummary[]> => {
+  const userRoles = await prisma.userRole.findMany({
+    where: {
+      userId
+    },
+    include: {
+      role: {
+        select: {
+          id: true,
+          name: true
+        }
+      }
+    }
+  });
+
+  return userRoles.map(
+    (userRole: { role: { id: string; name: string } }): RoleSummary => ({
+      id: userRole.role.id,
+      name: userRole.role.name
+    })
+  );
+};
 
 export class AuthService {
   async requestOtp(input: RequestOtpInput): Promise<{ message: string; devOtp?: string }> {
@@ -156,8 +191,15 @@ export class AuthService {
       id: string;
       email: string;
       status: UserStatus;
+      roles: RoleSummary[];
       permissions: string[];
       sessionScope: SessionScope;
+    };
+    session: {
+      id: string;
+      tokenId: string;
+      expiresAt: string;
+      rotatedSessionCount: number;
     };
   }> {
     const email = normalizeEmail(input.email);
@@ -276,22 +318,36 @@ export class AuthService {
     }
 
     const permissions = await resolveUserPermissionSet(user.id);
+    const roles = await listUserRoles(user.id);
 
-    const token = signAuthToken({
-      sub: user.id,
-      email: user.email,
-      status: user.status
-    });
+    const session = await prisma.$transaction(async (transactionClient) => {
+      const issuedSession = await issueAuthSession(
+        {
+          userId: user.id,
+          email: user.email,
+          status: user.status
+        },
+        transactionClient
+      );
 
-    await createAuditLog({
-      entityType: AUDIT_ENTITY.AUTH_SESSION,
-      entityId: user.id,
-      action: AUDIT_ACTION.AUTH_LOGIN_SUCCESS,
-      performedBy: user.id,
-      metadata: {
-        status: user.status,
-        scope: sessionScopeForStatus(user.status)
-      }
+      await createAuditLog(
+        {
+          entityType: AUDIT_ENTITY.AUTH_SESSION,
+          entityId: issuedSession.session.id,
+          action: AUDIT_ACTION.AUTH_LOGIN_SUCCESS,
+          performedBy: user.id,
+          metadata: {
+            status: user.status,
+            scope: sessionScopeForStatus(user.status),
+            sessionId: issuedSession.session.id,
+            sessionTokenId: issuedSession.session.tokenId,
+            rotatedSessionCount: issuedSession.rotatedSessionCount
+          }
+        },
+        transactionClient
+      );
+
+      return issuedSession;
     });
 
     logger.info("OTP verification succeeded", {
@@ -299,18 +355,86 @@ export class AuthService {
       userId: user.id,
       email: maskEmail(user.email),
       status: user.status,
-      permissionCount: permissions.size
+      roleCount: roles.length,
+      permissionCount: permissions.size,
+      sessionId: session.session.id,
+      rotatedSessionCount: session.rotatedSessionCount
     });
 
     return {
-      token,
+      token: session.token,
       user: {
         id: user.id,
         email: user.email,
         status: user.status,
+        roles,
         permissions: [...permissions],
         sessionScope: sessionScopeForStatus(user.status)
+      },
+      session: {
+        id: session.session.id,
+        tokenId: session.session.tokenId,
+        expiresAt: session.session.expiresAt.toISOString(),
+        rotatedSessionCount: session.rotatedSessionCount
       }
     };
+  }
+
+  async logout(input: {
+    userId: string;
+    sessionTokenId: string;
+    scope: LogoutInput["scope"];
+  }): Promise<{
+    scope: LogoutScope;
+    revokedSessionCount: number;
+    revokedSessionTokenId: string | null;
+  }> {
+    const scope = input.scope ?? LOGOUT_SCOPE.CURRENT_SESSION;
+    const auditAction =
+      scope === LOGOUT_SCOPE.ALL_SESSIONS
+        ? AUDIT_ACTION.AUTH_LOGOUT_ALL_SESSIONS
+        : AUDIT_ACTION.AUTH_LOGOUT_CURRENT_SESSION;
+
+    const revokeResult = await prisma.$transaction(async (transactionClient) => {
+      const revokedSessions = await revokeAuthSessions(
+        {
+          userId: input.userId,
+          sessionTokenId: input.sessionTokenId,
+          scope
+        },
+        transactionClient
+      );
+
+      await createAuditLog(
+        {
+          entityType:
+            scope === LOGOUT_SCOPE.ALL_SESSIONS ? AUDIT_ENTITY.USER : AUDIT_ENTITY.AUTH_SESSION,
+          entityId:
+            scope === LOGOUT_SCOPE.ALL_SESSIONS
+              ? input.userId
+              : input.sessionTokenId,
+          action: auditAction,
+          performedBy: input.userId,
+          metadata: {
+            scope,
+            revokedSessionCount: revokedSessions.revokedSessionCount,
+            revokedSessionTokenId: revokedSessions.revokedSessionTokenId
+          }
+        },
+        transactionClient
+      );
+
+      return revokedSessions;
+    });
+
+    logger.info("Logout processed", {
+      context: LOG_CONTEXT.AUTH,
+      userId: input.userId,
+      scope,
+      revokedSessionCount: revokeResult.revokedSessionCount,
+      revokedSessionTokenId: revokeResult.revokedSessionTokenId
+    });
+
+    return revokeResult;
   }
 }

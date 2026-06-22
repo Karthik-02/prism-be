@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { LOGOUT_SCOPE } from "../../config/auth.constants";
 import { VALIDATION_LIMITS } from "../../config/validation.constants";
 
 export const requestOtpSchema = z.object({
@@ -14,5 +15,10 @@ export const verifyOtpSchema = z.object({
   githubUserId: z.string().min(1).max(VALIDATION_LIMITS.GITHUB_USER_ID_MAX_LENGTH).optional()
 });
 
+export const logoutSchema = z.object({
+  scope: z.nativeEnum(LOGOUT_SCOPE).default(LOGOUT_SCOPE.CURRENT_SESSION)
+});
+
 export type RequestOtpInput = z.infer<typeof requestOtpSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
+export type LogoutInput = z.infer<typeof logoutSchema>;

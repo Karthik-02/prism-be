@@ -27,9 +27,17 @@ export const LOG_CONTEXT = {
   AUDIT: "audit",
   AUTH: "auth",
   EMAIL: "email",
+  EMAIL_DOMAIN: "email-domain",
+  NOTIFICATION: "notification",
+  PR: "pr",
+  PROFILE: "profile",
+  RELEASE: "release",
+  RELEASE_NOTE: "release-note",
+  ROLE: "role",
   REQUEST: "request",
   RBAC: "rbac",
   PRISMA: "prisma",
   SERVER: "server",
+  USER: "user",
   ERROR_HANDLER: "error-handler"
 } as const;

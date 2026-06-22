@@ -12,12 +12,39 @@ Implemented in this phase:
   - `POST /api/v1/auth/request-otp`
   - `POST /api/v1/auth/verify-otp`
   - `POST /api/v1/auth/logout`
+- Profile module:
+  - `GET /api/v1/profile`
+  - `PUT /api/v1/profile`
+- User management module:
+  - `POST /api/v1/users`
+  - `GET /api/v1/users`
+  - `POST /api/v1/users/:id/approve`
+  - `POST /api/v1/users/:id/disapprove`
+  - `POST /api/v1/users/:id/roles`
+  - `DELETE /api/v1/users/:id/roles/:roleId`
+- Role management module:
+  - `POST /api/v1/roles`
+  - `GET /api/v1/roles`
+  - `PUT /api/v1/roles/:id`
+  - `DELETE /api/v1/roles/:id`
+  - `POST /api/v1/roles/:id/permissions`
+  - `DELETE /api/v1/roles/:id/permissions/:permissionId`
+- Email domain management module:
+  - `GET /api/v1/email-domains`
+  - `POST /api/v1/email-domains`
+  - `DELETE /api/v1/email-domains/:id`
+  - `PATCH /api/v1/email-domains/:id/status`
+- PR management module:
+  - `POST /api/v1/prs`
+  - `GET /api/v1/prs`
+  - `PATCH /api/v1/prs/:id/status`
+  - `PATCH /api/v1/prs/:id/assign`
 - RBAC foundation:
   - JWT cookie authentication middleware.
   - Permission resolution service (roles -> permissions union).
 - Dockerized local stack (`prism-be` + PostgreSQL) via `docker-compose.yml`.
 
-Not implemented yet (scaffold only): `profile`, `users`, `roles`, `email-domains`, `prs`, `releases`, `release-notes`, `audit`, `notifications`.
+Not implemented yet (scaffold only): `releases`, `release-notes`.
 
 ## Quick Start
 
@@ -127,6 +154,19 @@ Release environments:
 - `STAGING`
 - `PRODUCTION`
 
+### Release Management
+
+- Leads can create, change, or delete both STAGE/PROD releases; creation emits emails to every lead/developer (permissions `CAN_MANAGE_RELEASE` or `CAN_CREATE_PR`) and logs notification outcomes for recipients.
+- `cutoffAt` gates when PR mappings remain editable; STAGING releases auto-link approved `AUTO` PRs that haven’t been mapped, while PRODUCTION releases auto-collect deployed `AUTO` PRs from the most recent staging window after the prior production release.
+- `MANUAL` PRs stay under the owner’s responsibility and must be explicitly added before the cutoff. Every `add-pr`/`remove-pr`/`date` operation creates the required audit + notification entries under `RELEASE_PR_MAP`/`RELEASE`.
+- All PR status transitions, reviewer assignments, and release updates send notification emails and persist outcomes so owners, assignees, and leads see when a PR moves, is reassigned, or is deployed.
+
+### Release Notes
+
+- `GET /release-notes/my`/`PUT /release-notes/my` let contributors craft personal release notes; `GET /release-notes/:releaseId`/`PUT /release-notes/:releaseId` expose the combined version leads generate.
+- Each note merges deployed PR summaries and any submitted `other` blocks (`[{ title, content }]`) into markdown; use `release_notes_struct.md` as the canonical template so downloads stay consistent.
+- Updates require `expectedVersion`, enabling optimistic concurrency and Git-like merge resolution when multiple editors touch the same note; every edit logs a `RELEASE_NOTE` audit event and notification.
+
 ## 5) Permission Model (Authoritative Contract)
 
 Authorization contract:
@@ -212,6 +252,17 @@ Canonical permission keys:
 - `used` boolean
 - `created_at` timestamp
 
+### `auth_sessions`
+
+- `id` UUID PK
+- `user_id` UUID FK -> `users.id`
+- `token_id` UUID unique (embedded in JWT as session claim)
+- `expires_at` timestamp
+- `revoked_at` timestamp nullable
+- `revoked_reason` varchar nullable
+- `created_at` timestamp
+- `updated_at` timestamp
+
 ### `prs`
 
 - `id` UUID PK
@@ -271,12 +322,20 @@ Contract: immutable (append only) for role changes, permission changes, status t
 3. Generate/store OTP in `otp_tokens` (`used=false`, bounded `expires_at`).
 4. Verify OTP with expiry and `used` checks.
 5. Mark OTP as used.
-6. Issue JWT (cookie-based, one-month session target).
-7. Enforce user status gate:
+6. Revoke any previous active server-side sessions for this user.
+7. Create `auth_sessions` record and issue JWT (cookie-based, one-month session target).
+8. Enforce user status gate:
    - `ACTIVE`: full permission-based access.
    - `INACTIVE`: deny login.
    - `PENDING_VERIFICATION`: profile-only scope.
    - `DISAPPROVED`: profile-only scope.
+
+Logout contract:
+
+- `POST /auth/logout` requires body scope:
+  - `CURRENT_SESSION`: revoke only current session.
+  - `ALL_SESSIONS`: revoke all active sessions for current user.
+- Cookie is always cleared on logout response.
 
 Profile side effect contract:
 

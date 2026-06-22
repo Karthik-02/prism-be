@@ -40,6 +40,28 @@ enum ReleaseEnvironment {
   UAT
 }
 
+enum ReleaseStatus {
+  CREATED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum ReleaseLinkMode {
+  MANUAL
+  AUTO
+}
+
+enum ReleasePrSource {
+  MANUAL
+  AUTO
+}
+
+enum ReleaseNoteScope {
+  FULL
+  OWN
+}
+
 enum NotificationStatus {
   SENT
   FAILED
@@ -60,6 +82,11 @@ model User {
   ownedPrs            Pr[]              @relation("pr_owner")
   reviewAssignedPrs   Pr[]              @relation("pr_reviewer")
   createdReleases     Release[]         @relation("releases_created_by_user")
+  addedReleasePrMaps  ReleasePrMap[]    @relation("release_pr_map_added_by_user")
+  ownedReleaseNotes   ReleaseNote[]     @relation("release_notes_owner")
+  createdReleaseNotes ReleaseNote[]     @relation("release_notes_created_by_user")
+  updatedReleaseNotes ReleaseNote[]     @relation("release_notes_updated_by_user")
+  authSessions        AuthSession[]
   performedAuditLogs  AuditLog[]        @relation("audit_logs_performed_by_user")
   receivedLogs        NotificationLog[] @relation("notification_logs_recipient")
   userRoles           UserRole[]
@@ -141,6 +168,25 @@ model OtpToken {
   @@map("otp_tokens")
 }
 
+model AuthSession {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  tokenId       String    @unique @map("token_id") @db.Uuid
+  expiresAt     DateTime  @map("expires_at")
+  revokedAt     DateTime? @map("revoked_at")
+  revokedReason String?   @map("revoked_reason") @db.VarChar(120)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@index([userId, revokedAt, expiresAt])
+  @@map("auth_sessions")
+}
+
 model Pr {
   id           String   @id @default(uuid()) @db.Uuid
   ownerId      String   @map("owner_id") @db.Uuid
@@ -153,6 +199,7 @@ model Pr {
   zohoLink     String?  @map("zoho_link") @db.Text
   deployedFlag Boolean  @default(false) @map("deployed_flag")
   comments     String   @default("") @db.Text
+  releaseMode  ReleaseLinkMode @default(MANUAL) @map("release_mode")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -169,38 +216,66 @@ model Pr {
 model Release {
   id          String             @id @default(uuid()) @db.Uuid
   environment ReleaseEnvironment
+  status      ReleaseStatus      @default(CREATED)
   name        String             @db.VarChar(255)
   releaseDate DateTime?          @map("release_date")
+  cutoffAt    DateTime?          @map("cutoff_at")
   createdBy   String             @map("created_by") @db.Uuid
   createdAt   DateTime           @default(now()) @map("created_at")
 
   creator      User           @relation("releases_created_by_user", fields: [createdBy], references: [id], onDelete: Restrict)
   releasePrMap ReleasePrMap[]
+  releaseNotes ReleaseNote[]
 
   @@index([environment])
   @@map("releases")
 }
 
 model ReleasePrMap {
-  releaseId String   @map("release_id") @db.Uuid
-  prId      String   @map("pr_id") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at")
+  releaseId String           @map("release_id") @db.Uuid
+  prId      String           @map("pr_id") @db.Uuid
+  addedBy   String?          @map("added_by") @db.Uuid
+  source    ReleasePrSource  @default(MANUAL)
+  createdAt DateTime         @default(now()) @map("created_at")
 
   release Release @relation(fields: [releaseId], references: [id], onDelete: Cascade)
   pr      Pr      @relation(fields: [prId], references: [id], onDelete: Cascade)
+  addedByUser User?   @relation("release_pr_map_added_by_user", fields: [addedBy], references: [id], onDelete: SetNull)
 
   @@id([releaseId, prId])
   @@map("release_pr_map")
 }
 
+model ReleaseNote {
+  id        String            @id @default(uuid()) @db.Uuid
+  releaseId String            @map("release_id") @db.Uuid
+  ownerId   String?           @map("owner_id") @db.Uuid
+  scope     ReleaseNoteScope
+  content   String            @db.Text
+  other     Json?
+  version   Int               @default(1)
+  createdBy String            @map("created_by") @db.Uuid
+  updatedBy String            @map("updated_by") @db.Uuid
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+
+  release Release @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  owner   User?   @relation("release_notes_owner", fields: [ownerId], references: [id], onDelete: SetNull)
+  creator User    @relation("release_notes_created_by_user", fields: [createdBy], references: [id], onDelete: Restrict)
+  updater User    @relation("release_notes_updated_by_user", fields: [updatedBy], references: [id], onDelete: Restrict)
+
+  @@unique([releaseId, scope, ownerId])
+  @@map("release_notes")
+}
+
 model AuditLog {
-  id         String   @id @default(uuid()) @db.Uuid
-  entityType String   @map("entity_type") @db.VarChar(120)
-  entityId   String   @map("entity_id") @db.Uuid
-  action     String   @db.VarChar(120)
-  performedBy String  @map("performed_by") @db.Uuid
-  metadata   Json?
-  createdAt  DateTime @default(now()) @map("created_at")
+  id          String   @id @default(uuid()) @db.Uuid
+  entityType  String   @map("entity_type") @db.VarChar(120)
+  entityId    String   @map("entity_id") @db.Uuid
+  action      String   @db.VarChar(120)
+  performedBy String   @map("performed_by") @db.Uuid
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
 
   performer User @relation("audit_logs_performed_by_user", fields: [performedBy], references: [id], onDelete: Restrict)
 

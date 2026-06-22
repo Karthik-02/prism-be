@@ -3,12 +3,12 @@ import type { RequestHandler } from "express";
 import { AUTH_RESPONSE_MESSAGE, SESSION_COOKIE_MAX_AGE_MS } from "../../config/auth.constants";
 import { env } from "../../config/env";
 import { HTTP_STATUS } from "../../config/http.constants";
-import { LOG_CONTEXT } from "../../config/log.constants";
+import { AppError } from "../../lib/app-error";
 import { asyncHandler } from "../../lib/async-handler";
-import { logger } from "../../lib/logger";
 import { parseBody } from "../../lib/validate";
+import { RBAC_ERROR_MESSAGE } from "../rbac/rbac.constants";
 import { AuthService } from "./auth.service";
-import { requestOtpSchema, verifyOtpSchema } from "./auth.schema";
+import { logoutSchema, requestOtpSchema, verifyOtpSchema } from "./auth.schema";
 
 const authService = new AuthService();
 
@@ -35,14 +35,25 @@ export const verifyOtp: RequestHandler = asyncHandler(async (req, res) => {
 
   res.status(HTTP_STATUS.OK).json({
     message: AUTH_RESPONSE_MESSAGE.OTP_VERIFIED,
-    user: result.user
+    user: result.user,
+    session: {
+      id: result.session.id,
+      expiresAt: result.session.expiresAt,
+      rotatedSessionCount: result.session.rotatedSessionCount
+    }
   });
 });
 
 export const logout: RequestHandler = asyncHandler(async (req, res) => {
-  logger.info("Logout request completed", {
-    context: LOG_CONTEXT.AUTH,
-    userId: req.auth?.userId
+  if (!req.auth) {
+    throw new AppError(RBAC_ERROR_MESSAGE.AUTH_REQUIRED, HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  const payload = parseBody(logoutSchema, req.body ?? {});
+  const result = await authService.logout({
+    userId: req.auth.userId,
+    sessionTokenId: req.auth.sessionTokenId,
+    scope: payload.scope
   });
 
   res.clearCookie(env.JWT_COOKIE_NAME, {
@@ -51,6 +62,9 @@ export const logout: RequestHandler = asyncHandler(async (req, res) => {
   });
 
   res.status(HTTP_STATUS.OK).json({
-    message: AUTH_RESPONSE_MESSAGE.LOGOUT_SUCCESS
+    message: AUTH_RESPONSE_MESSAGE.LOGOUT_SUCCESS,
+    userId: req.auth.userId,
+    scope: result.scope,
+    revokedSessionCount: result.revokedSessionCount
   });
 });
