@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { AuditLog, Prisma, PrismaClient } from "@prisma/client";
 
 import { env } from "../../config/env";
 import { HTTP_STATUS } from "../../config/http.constants";
@@ -45,6 +45,25 @@ const resolveAuditActorId = async (
   }
 
   return systemUser.id;
+};
+
+export const listAuditLogs = async (limit = 15): Promise<AuditLog[]> => {
+  const resolvedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(limit, 50)) : 15;
+
+  return prisma.auditLog.findMany({
+    take: resolvedLimit,
+    orderBy: {
+      createdAt: "desc"
+    },
+    include: {
+      performer: {
+        select: {
+          firstName: true,
+          lastName: true
+        }
+      }
+    }
+  });
 };
 
 export const createAuditLog = async (

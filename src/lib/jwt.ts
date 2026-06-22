@@ -12,6 +12,7 @@ const JWT_ERROR_MESSAGE = {
 
 export interface AuthTokenPayload extends JwtPayload {
   sub: string;
+  sid: string;
   email: string;
   status: UserStatus;
 }
@@ -37,4 +38,19 @@ export const verifyAuthToken = (token: string): AuthTokenPayload => {
   } catch {
     throw new AppError(JWT_ERROR_MESSAGE.INVALID_OR_EXPIRED_TOKEN, HTTP_STATUS.UNAUTHORIZED);
   }
+};
+
+export const getAuthTokenExpiryDate = (token: string): Date => {
+  const decoded = jwt.decode(token);
+
+  if (
+    !decoded ||
+    typeof decoded === "string" ||
+    typeof decoded.exp !== "number" ||
+    Number.isNaN(decoded.exp)
+  ) {
+    throw new AppError(JWT_ERROR_MESSAGE.INVALID_TOKEN, HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  return new Date(decoded.exp * 1000);
 };

@@ -10,17 +10,56 @@ import { asyncHandler } from "../lib/async-handler";
 import { verifyAuthToken } from "../lib/jwt";
 import { logger } from "../lib/logger";
 import { prisma } from "../lib/prisma";
+import { findActiveSessionByTokenId } from "../modules/auth/auth-session.service";
 import { RouteAccessLevel, RBAC_ERROR_MESSAGE } from "../modules/rbac/rbac.constants";
 import { resolveUserPermissionSet } from "../modules/rbac/rbac.service";
 
 export interface RbacPolicy {
   access: RouteAccessLevel;
   requiredPermissions?: PermissionKey[];
+  requiredPermissionsAny?: PermissionKey[];
   allowedStatuses?: UserStatusType[];
 }
 
 const attachAuthContext = async (token: string, req: Request): Promise<void> => {
   const payload = verifyAuthToken(token);
+  const sessionTokenId = payload.sid;
+
+  if (!sessionTokenId) {
+    logger.warn("RBAC auth failed: token missing session id", {
+      context: LOG_CONTEXT.RBAC,
+      path: req.originalUrl,
+      userIdFromToken: payload.sub
+    });
+
+    throw new AppError(RBAC_ERROR_MESSAGE.AUTH_REQUIRED, HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  const authSession = await findActiveSessionByTokenId(sessionTokenId);
+
+  if (!authSession) {
+    logger.warn("RBAC auth failed: session not active", {
+      context: LOG_CONTEXT.RBAC,
+      path: req.originalUrl,
+      userIdFromToken: payload.sub,
+      sessionTokenId
+    });
+
+    throw new AppError(RBAC_ERROR_MESSAGE.AUTH_REQUIRED, HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  if (authSession.userId !== payload.sub) {
+    logger.warn("RBAC auth failed: token subject mismatch with session owner", {
+      context: LOG_CONTEXT.RBAC,
+      path: req.originalUrl,
+      userIdFromToken: payload.sub,
+      sessionOwnerUserId: authSession.userId,
+      sessionTokenId
+    });
+
+    throw new AppError(RBAC_ERROR_MESSAGE.AUTH_REQUIRED, HTTP_STATUS.UNAUTHORIZED);
+  }
+
   const user = await prisma.user.findUnique({ where: { id: payload.sub } });
 
   if (!user) {
@@ -47,6 +86,7 @@ const attachAuthContext = async (token: string, req: Request): Promise<void> => 
 
   req.auth = {
     userId: user.id,
+    sessionTokenId,
     email: user.email,
     status: user.status,
     permissions
@@ -116,6 +156,23 @@ export const rbacGuard = (policy: RbacPolicy): RequestHandler =>
           path: req.originalUrl,
           userId: req.auth.userId,
           requiredPermissions: policy.requiredPermissions
+        });
+
+        throw new AppError(RBAC_ERROR_MESSAGE.FORBIDDEN, HTTP_STATUS.FORBIDDEN);
+      }
+    }
+
+    if (policy.requiredPermissionsAny?.length) {
+      const hasAnyPermission = policy.requiredPermissionsAny.some((permission) =>
+        req.auth?.permissions.has(permission)
+      );
+
+      if (!hasAnyPermission) {
+        logger.warn("RBAC auth failed: missing any permitted permission", {
+          context: LOG_CONTEXT.RBAC,
+          path: req.originalUrl,
+          userId: req.auth.userId,
+          requiredPermissionsAny: policy.requiredPermissionsAny
         });
 
         throw new AppError(RBAC_ERROR_MESSAGE.FORBIDDEN, HTTP_STATUS.FORBIDDEN);

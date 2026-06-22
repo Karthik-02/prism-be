@@ -16,6 +16,15 @@ export interface SendOtpInput {
   ttlMinutes: number;
 }
 
+export interface SendTemplateEmailInput {
+  to: string[];
+  subject: string;
+  headline: string;
+  introLines?: string[];
+  detailRows?: Array<{ label: string; value: string }>;
+  footerLines?: string[];
+}
+
 interface OtpTemplateInput {
   email: string;
   otp: string;
@@ -169,5 +178,119 @@ export const sendOtpEmail = async ({ email, otp, ttlMinutes }: SendOtpInput): Pr
     context: LOG_CONTEXT.EMAIL,
     recipient: maskEmail(email),
     messageId: sentMessage.messageId
+  });
+};
+
+const buildDetailRowsHtml = (detailRows: Array<{ label: string; value: string }> = []): string =>
+  detailRows
+    .map(
+      (row) => `
+        <tr>
+          <td style="padding:6px 12px;color:#9d91b8;font-size:13px;text-align:left;width:38%;">${row.label}</td>
+          <td style="padding:6px 12px;color:#f4efff;font-size:13px;text-align:left;">${row.value}</td>
+        </tr>
+      `
+    )
+    .join("");
+
+const buildTemplateText = (input: SendTemplateEmailInput): string => {
+  const lines = [
+    input.headline,
+    "",
+    ...(input.introLines ?? []),
+    ...(input.detailRows?.map((row) => `${row.label}: ${row.value}`) ?? []),
+    "",
+    ...(input.footerLines ?? [])
+  ];
+
+  return lines.join("\n");
+};
+
+const buildTemplateHtml = (input: SendTemplateEmailInput, logoCid: string): string => {
+  const detailRowsHtml = buildDetailRowsHtml(input.detailRows);
+
+  return `
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${EMAIL_CONFIG.BRAND_NAME}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#090713;font-family:Segoe UI,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 16px;background:radial-gradient(circle at top,#1a1230 0%,#090713 55%);">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:720px;background:#0f0b1f;border:1px solid #2a2045;border-radius:20px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 32px 20px;text-align:center;background:linear-gradient(180deg,#15102a 0%,#0f0b1f 100%);">
+                <img src="cid:${logoCid}" alt="${EMAIL_CONFIG.BRAND_NAME} logo" style="max-width:260px;width:100%;height:auto;display:block;margin:0 auto;" />
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 32px;color:#f4efff;text-align:left;">
+                <h1 style="margin:0;font-size:22px;line-height:1.4;">${input.headline}</h1>
+                ${(input.introLines ?? [])
+                  .map(
+                    (line) =>
+                      `<p style="margin:10px 0 0;color:#c8bddf;font-size:14px;line-height:1.6;">${line}</p>`
+                  )
+                  .join("")}
+              </td>
+            </tr>
+            ${
+              detailRowsHtml
+                ? `<tr><td style="padding:12px 24px 8px;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#0b0916;border:1px solid #241c3a;border-radius:12px;">${detailRowsHtml}</table>
+                </td></tr>`
+                : ""
+            }
+            ${
+              input.footerLines?.length
+                ? `<tr><td style="padding:16px 32px 24px;color:#7f7598;font-size:12px;line-height:1.6;">${input.footerLines
+                    .map((line) => `<div>${line}</div>`)
+                    .join("")}</td></tr>`
+                : ""
+            }
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+`;
+};
+
+export const sendTemplateEmail = async (input: SendTemplateEmailInput): Promise<void> => {
+  const attachments = await resolveLogoAttachment();
+  const recipients = [...new Set(input.to)];
+
+  if (!recipients.length) {
+    return;
+  }
+
+  const sentMessage = await smtpTransporter.sendMail({
+    from: `"${env.SMTP_FROM_NAME || EMAIL_CONFIG.FROM_FALLBACK_NAME}" <${env.SMTP_FROM_EMAIL}>`,
+    to: recipients,
+    subject: input.subject,
+    text: buildTemplateText(input),
+    html: buildTemplateHtml(input, EMAIL_CONFIG.LOGO_CID),
+    attachments
+  });
+
+  const previewUrl = nodemailer.getTestMessageUrl(sentMessage);
+  if (previewUrl) {
+    logger.info("Email preview available", {
+      context: LOG_CONTEXT.EMAIL,
+      recipients: recipients.map(maskEmail),
+      previewUrl
+    });
+  }
+
+  logger.info("Email sent", {
+    context: LOG_CONTEXT.EMAIL,
+    recipients: recipients.map(maskEmail),
+    messageId: sentMessage.messageId,
+    subject: input.subject
   });
 };
